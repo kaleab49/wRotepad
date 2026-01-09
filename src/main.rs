@@ -12,7 +12,7 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "wRotepad",
         options,
-        Box::new(|_cc| Box::new(NotepadApp::default())),
+        Box::new(|_cc| Box::new(NotepadApp::new())),
     )
 }
 
@@ -21,9 +21,18 @@ struct NotepadApp {
     text: String,
     current_file: Option<String>,
     saved_text: String,
+    font_size: f32,
+    error_message: Option<String>,
 }
 
 impl NotepadApp {
+    fn new() -> Self {
+        Self {
+            font_size: 14.0,
+            ..Default::default()
+        }
+    }
+
     fn new_file(&mut self) {
         self.text = String::new();
         self.current_file = None;
@@ -32,20 +41,30 @@ impl NotepadApp {
 
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
-            if let Ok(contents) = fs::read_to_string(&path) {
-                self.text = contents.clone();
-                self.saved_text = contents;
-                self.current_file = Some(path.to_string_lossy().to_string());
+            match fs::read_to_string(&path) {
+                Ok(contents) => {
+                    self.text = contents.clone();
+                    self.saved_text = contents;
+                    self.current_file = Some(path.to_string_lossy().to_string());
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to open file: {}", e));
+                }
             }
         }
     }
 
     fn save_file(&mut self) {
         if let Some(ref path) = self.current_file {
-            if let Err(e) = fs::write(path, &self.text) {
-                eprintln!("Error saving file: {}", e);
-            } else {
-                self.saved_text = self.text.clone();
+            match fs::write(path, &self.text) {
+                Ok(_) => {
+                    self.saved_text = self.text.clone();
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to save file: {}", e));
+                }
             }
         } else {
             self.save_file_as();
@@ -57,11 +76,15 @@ impl NotepadApp {
             .set_file_name("untitled.txt")
             .save_file()
         {
-            if let Err(e) = fs::write(&path, &self.text) {
-                eprintln!("Error saving file: {}", e);
-            } else {
-                self.current_file = Some(path.to_string_lossy().to_string());
-                self.saved_text = self.text.clone();
+            match fs::write(&path, &self.text) {
+                Ok(_) => {
+                    self.current_file = Some(path.to_string_lossy().to_string());
+                    self.saved_text = self.text.clone();
+                    self.error_message = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to save file: {}", e));
+                }
             }
         }
     }
@@ -107,6 +130,12 @@ impl NotepadApp {
 
 impl eframe::App for NotepadApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Update font size
+        ctx.style_mut().text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(self.font_size),
+        );
+
         // Update window title
         frame.set_window_title(&self.get_window_title());
 
@@ -139,6 +168,12 @@ impl eframe::App for NotepadApp {
                         self.save_file_as();
                     }
                 });
+                ui.menu_button("View", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Font Size:");
+                        ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0));
+                    });
+                });
             });
         });
 
@@ -146,6 +181,19 @@ impl eframe::App for NotepadApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.text_edit_multiline(&mut self.text);
         });
+
+        // Show error messages
+        if let Some(ref error) = self.error_message {
+            egui::Window::new("Error")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(error);
+                    if ui.button("OK").clicked() {
+                        self.error_message = None;
+                    }
+                });
+        }
 
         // Status bar
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
