@@ -83,6 +83,26 @@ impl NotepadApp {
             format!("{} - wRotepad", file_name)
         }
     }
+
+    fn get_line_count(&self) -> usize {
+        if self.text.is_empty() {
+            1
+        } else {
+            self.text.lines().count()
+        }
+    }
+
+    fn get_word_count(&self) -> usize {
+        if self.text.trim().is_empty() {
+            0
+        } else {
+            self.text.split_whitespace().count()
+        }
+    }
+
+    fn get_char_count(&self) -> usize {
+        self.text.chars().count()
+    }
 }
 
 impl eframe::App for NotepadApp {
@@ -125,6 +145,17 @@ impl eframe::App for NotepadApp {
         // Text editor
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.text_edit_multiline(&mut self.text);
+        });
+
+        // Status bar
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Lines: {}", self.get_line_count()));
+                ui.separator();
+                ui.label(format!("Words: {}", self.get_word_count()));
+                ui.separator();
+                ui.label(format!("Characters: {}", self.get_char_count()));
+            });
         });
     }
 }
