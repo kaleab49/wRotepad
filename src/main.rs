@@ -20,13 +20,21 @@ fn main() -> Result<(), eframe::Error> {
 struct NotepadApp {
     text: String,
     current_file: Option<String>,
+    saved_text: String,
 }
 
 impl NotepadApp {
+    fn new_file(&mut self) {
+        self.text = String::new();
+        self.current_file = None;
+        self.saved_text = String::new();
+    }
+
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             if let Ok(contents) = fs::read_to_string(&path) {
-                self.text = contents;
+                self.text = contents.clone();
+                self.saved_text = contents;
                 self.current_file = Some(path.to_string_lossy().to_string());
             }
         }
@@ -36,6 +44,8 @@ impl NotepadApp {
         if let Some(ref path) = self.current_file {
             if let Err(e) = fs::write(path, &self.text) {
                 eprintln!("Error saving file: {}", e);
+            } else {
+                self.saved_text = self.text.clone();
             }
         } else {
             self.save_file_as();
@@ -51,21 +61,58 @@ impl NotepadApp {
                 eprintln!("Error saving file: {}", e);
             } else {
                 self.current_file = Some(path.to_string_lossy().to_string());
+                self.saved_text = self.text.clone();
             }
+        }
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.text != self.saved_text
+    }
+
+    fn get_window_title(&self) -> String {
+        let file_name = self.current_file
+            .as_ref()
+            .and_then(|path| std::path::Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("Untitled");
+        
+        if self.has_unsaved_changes() {
+            format!("{}* - wRotepad", file_name)
+        } else {
+            format!("{} - wRotepad", file_name)
         }
     }
 }
 
 impl eframe::App for NotepadApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Update window title
+        frame.set_window_title(&self.get_window_title());
+
+        // Keyboard shortcuts
+        let input = ctx.input(|i| i.clone());
+        if input.key_pressed(egui::Key::S) && input.modifiers.ctrl {
+            self.save_file();
+        }
+        if input.key_pressed(egui::Key::O) && input.modifiers.ctrl {
+            self.open_file();
+        }
+        if input.key_pressed(egui::Key::N) && input.modifiers.ctrl {
+            self.new_file();
+        }
+
         // Menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open").clicked() {
+                    if ui.button("New\tCtrl+N").clicked() {
+                        self.new_file();
+                    }
+                    if ui.button("Open\tCtrl+O").clicked() {
                         self.open_file();
                     }
-                    if ui.button("Save").clicked() {
+                    if ui.button("Save\tCtrl+S").clicked() {
                         self.save_file();
                     }
                     if ui.button("Save As").clicked() {
