@@ -129,15 +129,17 @@ impl NotepadApp {
 }
 
 impl eframe::App for NotepadApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Update font size
-        ctx.style_mut().text_styles.insert(
-            egui::TextStyle::Body,
-            egui::FontId::proportional(self.font_size),
-        );
+        ctx.style_mut(|style| {
+            style.text_styles.insert(
+                egui::TextStyle::Body,
+                egui::FontId::proportional(self.font_size),
+            );
+        });
 
         // Update window title
-        frame.set_window_title(&self.get_window_title());
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Title(self.get_window_title()));
 
         // Keyboard shortcuts
         let input = ctx.input(|i| i.clone());
@@ -183,12 +185,12 @@ impl eframe::App for NotepadApp {
         });
 
         // Show error messages
-        if let Some(ref error) = self.error_message {
+        if let Some(error) = self.error_message.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(error);
+                    ui.label(&error);
                     if ui.button("OK").clicked() {
                         self.error_message = None;
                     }
