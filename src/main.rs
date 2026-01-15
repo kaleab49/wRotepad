@@ -16,13 +16,28 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
-#[derive(Default)]
 struct NotepadApp {
     text: String,
     current_file: Option<String>,
     saved_text: String,
     font_size: f32,
     error_message: Option<String>,
+    text_editor_id: egui::Id, // Unique ID for the text editor to manage focus
+    needs_focus: bool, // Track if we need to request focus on next frame
+}
+
+impl Default for NotepadApp {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            current_file: None,
+            saved_text: String::new(),
+            font_size: 14.0,
+            error_message: None,
+            text_editor_id: egui::Id::new("main_text_editor"),
+            needs_focus: true, // Request focus on first frame
+        }
+    }
 }
 
 impl NotepadApp {
@@ -174,9 +189,13 @@ impl eframe::App for NotepadApp {
             self.select_all();
         }
 
-        // Menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
+        // Menu bar - separated header that doesn't accept text input
+        // This panel is only for menu buttons, not for text editing
+        egui::TopBottomPanel::top("menu_bar")
+            .resizable(false) // Can't resize the menu bar
+            .show(ctx, |ui| {
+                // Menu bar doesn't accept keyboard focus - it's only for clicking
+                egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("New\tCtrl+N").clicked() {
                         self.new_file();
@@ -215,16 +234,18 @@ impl eframe::App for NotepadApp {
             });
         });
 
-        // Text editor - fills entire body with no border
-        // Remove the default frame/border to make it seamless
+        // Text editor - fills entire body, completely separated from header
+        // This is the only area where text input is accepted
         egui::CentralPanel::default()
             .frame(egui::Frame::none()) // No border, no background
             .show(ctx, |ui| {
-                // Remove any padding/margins for seamless text area
+                // Set minimum size to fill available space
                 ui.set_min_size(ui.available_size());
                 
-                // Create the text editor widget with no frame
+                // Create the text editor widget with unique ID
+                // This ensures it can always be focused and identified
                 let text_edit = egui::TextEdit::multiline(&mut self.text)
+                    .id(self.text_editor_id) // Use unique ID for focus management
                     .desired_width(f32::INFINITY)
                     .desired_rows(usize::MAX)
                     .frame(false); // Remove the text edit frame/border
@@ -232,13 +253,24 @@ impl eframe::App for NotepadApp {
                 // Add the text editor to fill entire available space
                 let response = ui.add_sized(ui.available_size(), text_edit);
                 
-                // Handle Select All shortcut when text editor is focused
+                // Always ensure the text editor has focus
+                // This prevents typing from going to the header
+                if self.needs_focus || !response.has_focus() {
+                    // Request focus for the text editor
+                    response.request_focus();
+                    self.needs_focus = false; // Only request once on startup
+                }
+                
+                // If user clicks in the text area, ensure it gets focus
+                if response.clicked() && !response.has_focus() {
+                    response.request_focus();
+                }
+                
+                // Handle Select All shortcut only when text editor has focus
                 if response.has_focus() {
                     let input = ctx.input(|i| i.clone());
                     if input.key_pressed(egui::Key::A) && input.modifiers.ctrl {
-                        // Request focus and select all
-                        // Note: egui handles text selection automatically
-                        // This ensures the editor responds to Ctrl+A
+                        // Select all is handled automatically by egui when focused
                         response.request_focus();
                     }
                 }
