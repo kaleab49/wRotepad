@@ -12,292 +12,371 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "wRotepad",
         options,
-        Box::new(|_cc| Box::new(NotepadApp::new())),
+        Box::new(|_cc| Box::new(NotepadApp::default())),
     )
 }
 
 struct NotepadApp {
     text: String,
-    current_file: Option<String>,
     saved_text: String,
+    current_file: Option<String>,
     font_size: f32,
-    error_message: Option<String>,
-    text_editor_id: egui::Id, // Unique ID for the text editor to manage focus
-    needs_focus: bool, // Track if we need to request focus on next frame
+    error: Option<String>,
+    editor_id: egui::Id,
+    request_focus: bool,
+    // Find feature state
+    find_open: bool,
+    find_text: String,
+    find_matches: Vec<usize>, // Positions where matches are found
+    current_match_index: usize, // Which match we're currently viewing
 }
 
 impl Default for NotepadApp {
     fn default() -> Self {
         Self {
             text: String::new(),
-            current_file: None,
             saved_text: String::new(),
+            current_file: None,
             font_size: 14.0,
-            error_message: None,
-            text_editor_id: egui::Id::new("main_text_editor"),
-            needs_focus: true, // Request focus on first frame
+            error: None,
+            editor_id: egui::Id::new("editor"),
+            request_focus: true,
+            find_open: false,
+            find_text: String::new(),
+            find_matches: Vec::new(),
+            current_match_index: 0,
         }
     }
 }
 
 impl NotepadApp {
-    fn new() -> Self {
-        Self {
-            font_size: 14.0,
-            ..Default::default()
-        }
-    }
+    /* ---------- File actions ---------- */
 
     fn new_file(&mut self) {
-        self.text = String::new();
+        self.text.clear();
+        self.saved_text.clear();
         self.current_file = None;
-        self.saved_text = String::new();
     }
 
     fn open_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new().pick_file() {
             match fs::read_to_string(&path) {
-                Ok(contents) => {
-                    self.text = contents.clone();
-                    self.saved_text = contents;
-                    self.current_file = Some(path.to_string_lossy().to_string());
-                    self.error_message = None;
+                Ok(data) => {
+                    self.text = data.clone();
+                    self.saved_text = data;
+                    self.current_file = Some(path.to_string_lossy().into());
                 }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to open file: {}", e));
-                }
+                Err(e) => self.error = Some(e.to_string()),
             }
         }
     }
 
-    fn save_file(&mut self) {
-        if let Some(ref path) = self.current_file {
-            match fs::write(path, &self.text) {
-                Ok(_) => {
+    fn save(&mut self) {
+        match &self.current_file {
+            Some(path) => {
+                if let Err(e) = fs::write(path, &self.text) {
+                    self.error = Some(e.to_string());
+                } else {
                     self.saved_text = self.text.clone();
-                    self.error_message = None;
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to save file: {}", e));
                 }
             }
-        } else {
-            self.save_file_as();
+            None => self.save_as(),
         }
     }
 
-    fn save_file_as(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_file_name("unnamed.txt")
-            .save_file()
-        {
-            match fs::write(&path, &self.text) {
-                Ok(_) => {
-                    self.current_file = Some(path.to_string_lossy().to_string());
-                    self.saved_text = self.text.clone();
-                    self.error_message = None;
-                }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to save file: {}", e));
-                }
+    fn save_as(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().save_file() {
+            if let Err(e) = fs::write(&path, &self.text) {
+                self.error = Some(e.to_string());
+            } else {
+                self.current_file = Some(path.to_string_lossy().into());
+                self.saved_text = self.text.clone();
             }
         }
     }
 
-    fn has_unsaved_changes(&self) -> bool {
+    /* ---------- State helpers ---------- */
+
+    fn dirty(&self) -> bool {
         self.text != self.saved_text
     }
 
-    fn get_window_title(&self) -> String {
-        let file_name = self
+    fn title(&self) -> String {
+        let name = self
             .current_file
-            .as_ref()
-            .and_then(|path| std::path::Path::new(path).file_name())
-            .and_then(|name| name.to_str())
-            .unwrap_or("Unnamed");
+            .as_deref()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("Untitled");
 
-        if self.has_unsaved_changes() {
-            format!("{}* - wRotepad", file_name)
+        if self.dirty() {
+            format!("{}* - wRotepad", name)
         } else {
-            format!("{} - wRotepad", file_name)
+            format!("{} - wRotepad", name)
         }
     }
 
-    fn get_line_count(&self) -> usize {
-        if self.text.is_empty() {
-            1
-        } else {
-            self.text.lines().count()
+    /* ---------- Find feature ---------- */
+
+    fn open_find(&mut self) {
+        self.find_open = true;
+        self.find_text.clear();
+        self.find_matches.clear();
+        self.current_match_index = 0;
+    }
+
+    fn close_find(&mut self) {
+        self.find_open = false;
+        self.find_text.clear();
+        self.find_matches.clear();
+        self.current_match_index = 0;
+    }
+
+    // Search for all matches of the find text in the document
+    fn search_matches(&mut self) {
+        self.find_matches.clear();
+        
+        // If search text is empty, no matches
+        if self.find_text.is_empty() {
+            return;
+        }
+
+        // Find all occurrences of the search text (case-sensitive)
+        let search_text = &self.find_text;
+        let mut start = 0;
+        
+        while let Some(pos) = self.text[start..].find(search_text) {
+            let absolute_pos = start + pos;
+            self.find_matches.push(absolute_pos);
+            start = absolute_pos + search_text.len();
         }
     }
 
-    fn get_word_count(&self) -> usize {
-        if self.text.trim().is_empty() {
-            0
-        } else {
-            self.text.split_whitespace().count()
+    // Navigate to next match
+    fn find_next(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
         }
+        self.current_match_index = (self.current_match_index + 1) % self.find_matches.len();
     }
 
-    fn get_char_count(&self) -> usize {
-        self.text.chars().count()
-    }
-
-    // Select all text in the editor
-    // This function prepares the text for selection
-    fn select_all(&mut self) {
-        // In egui, selection is handled by the TextEdit widget itself
-        // We'll add a visual indicator that select all was triggered
-        // The actual selection happens in the UI layer
+    // Navigate to previous match
+    fn find_previous(&mut self) {
+        if self.find_matches.is_empty() {
+            return;
+        }
+        if self.current_match_index == 0 {
+            self.current_match_index = self.find_matches.len() - 1;
+        } else {
+            self.current_match_index -= 1;
+        }
     }
 }
 
+/* ================== egui App ================== */
+
 impl eframe::App for NotepadApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Update font size
-        ctx.style_mut(|style| {
-            style.text_styles.insert(
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        /* ---------- Global style ---------- */
+
+        ctx.style_mut(|s| {
+            s.text_styles.insert(
                 egui::TextStyle::Body,
                 egui::FontId::proportional(self.font_size),
             );
         });
 
-        // Update window title
-        ctx.send_viewport_cmd_to(
-            egui::ViewportId::ROOT,
-            egui::ViewportCommand::Title(self.get_window_title()),
+        ctx.send_viewport_cmd(
+            egui::ViewportCommand::Title(self.title()),
         );
 
-        // Handle keyboard shortcuts
-        let input = ctx.input(|i| i.clone());
-        
-        // File shortcuts
-        if input.key_pressed(egui::Key::S) && input.modifiers.ctrl {
-            self.save_file();
-        }
-        if input.key_pressed(egui::Key::O) && input.modifiers.ctrl {
-            self.open_file();
-        }
-        if input.key_pressed(egui::Key::N) && input.modifiers.ctrl {
-            self.new_file();
-        }
-        
-        // Edit shortcuts (Copy, Paste, Cut, Select All)
-        // Note: Copy/Paste/Cut work automatically in egui TextEdit widgets
-        // We add menu items for user visibility, but the shortcuts work natively
-        if input.key_pressed(egui::Key::A) && input.modifiers.ctrl {
-            self.select_all();
-        }
+        /* ---------- Shortcuts ---------- */
 
-        // Menu bar - separated header that doesn't accept text input
-        // This panel is only for menu buttons, not for text editing
-        egui::TopBottomPanel::top("menu_bar")
-            .resizable(false) // Can't resize the menu bar
-            .show(ctx, |ui| {
-                // Menu bar doesn't accept keyboard focus - it's only for clicking
-                egui::menu::bar(ui, |ui| {
+        ctx.input(|i| {
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::S) {
+                self.save();
+            }
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::O) {
+                self.open_file();
+            }
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::N) {
+                self.new_file();
+            }
+            // Open find dialog with Ctrl+F
+            if i.modifiers.ctrl && i.key_pressed(egui::Key::F) {
+                self.open_find();
+            }
+            // Close find dialog with Escape
+            if i.key_pressed(egui::Key::Escape) && self.find_open {
+                self.close_find();
+            }
+        });
+
+        /* ---------- Menu bar ---------- */
+
+        egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    if ui.button("New\tCtrl+N").clicked() {
+                    if ui.button("New").clicked() {
                         self.new_file();
+                        ui.close_menu();
                     }
-                    if ui.button("Open\tCtrl+O").clicked() {
+                    if ui.button("Open").clicked() {
                         self.open_file();
+                        ui.close_menu();
                     }
-                    if ui.button("Save\tCtrl+S").clicked() {
-                        self.save_file();
+                    if ui.button("Save").clicked() {
+                        self.save();
+                        ui.close_menu();
                     }
                     if ui.button("Save As").clicked() {
-                        self.save_file_as();
+                        self.save_as();
+                        ui.close_menu();
                     }
                 });
-                
-                // Edit menu with copy, paste, cut, and select all
+
                 ui.menu_button("Edit", |ui| {
-                    // Note: Copy (Ctrl+C), Paste (Ctrl+V), and Cut (Ctrl+X) 
-                    // work automatically in the text editor - no code needed!
-                    // These menu items are here for user reference
-                    ui.label("Copy\tCtrl+C");
-                    ui.label("Paste\tCtrl+V");
-                    ui.label("Cut\tCtrl+X");
-                    ui.separator();
-                    if ui.button("Select All\tCtrl+A").clicked() {
-                        self.select_all();
+                    if ui.button("Find\tCtrl+F").clicked() {
+                        self.open_find();
+                        ui.close_menu();
                     }
                 });
-                
+
                 ui.menu_button("View", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Font Size:");
-                        ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0));
-                    });
+                    ui.add(egui::Slider::new(&mut self.font_size, 8.0..=32.0)
+                        .text("Font size"));
                 });
             });
         });
 
-        // Text editor - fills entire body, completely separated from header
-        // This is the only area where text input is accepted
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none()) // No border, no background
-            .show(ctx, |ui| {
-                // Set minimum size to fill available space
-                ui.set_min_size(ui.available_size());
-                
-                // Create the text editor widget with unique ID
-                // This ensures it can always be focused and identified
-                let text_edit = egui::TextEdit::multiline(&mut self.text)
-                    .id(self.text_editor_id) // Use unique ID for focus management
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(usize::MAX)
-                    .frame(false); // Remove the text edit frame/border
-                
-                // Add the text editor to fill entire available space
-                let response = ui.add_sized(ui.available_size(), text_edit);
-                
-                // Always ensure the text editor has focus
-                // This prevents typing from going to the header
-                if self.needs_focus || !response.has_focus() {
-                    // Request focus for the text editor
-                    response.request_focus();
-                    self.needs_focus = false; // Only request once on startup
-                }
-                
-                // If user clicks in the text area, ensure it gets focus
-                if response.clicked() && !response.has_focus() {
-                    response.request_focus();
-                }
-                
-                // Handle Select All shortcut only when text editor has focus
-                if response.has_focus() {
-                    let input = ctx.input(|i| i.clone());
-                    if input.key_pressed(egui::Key::A) && input.modifiers.ctrl {
-                        // Select all is handled automatically by egui when focused
-                        response.request_focus();
-                    }
-                }
-            });
+        /* ---------- Editor ---------- */
 
-        // Show error messages
-        if let Some(error) = self.error_message.clone() {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let editor = egui::TextEdit::multiline(&mut self.text)
+                .id(self.editor_id)
+                .frame(false)
+                .desired_width(f32::INFINITY);
+
+            let response = ui.add_sized(ui.available_size(), editor);
+
+            if self.request_focus {
+                response.request_focus();
+                self.request_focus = false;
+            }
+        });
+
+        /* ---------- Status bar ---------- */
+
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(format!("Lines: {}", self.text.lines().count().max(1)));
+                ui.separator();
+                ui.label(format!("Words: {}", self.text.split_whitespace().count()));
+                ui.separator();
+                ui.label(format!("Chars: {}", self.text.chars().count()));
+            });
+        });
+
+        /* ---------- Find dialog (VSCode-style) ---------- */
+
+        if self.find_open {
+            // Position the find bar at the top right, like VSCode
+            // We'll use a fixed width and position it relative to screen
+            egui::Window::new("Find")
+                .collapsible(false)
+                .resizable(false)
+                .title_bar(false)
+                .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+                .fixed_size([400.0, 80.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        // Search text input with unique ID for focus management
+                        let find_input_id = egui::Id::new("find_input");
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.find_text)
+                                .id(find_input_id)
+                        );
+                        
+                        // Auto-focus the search box when find dialog opens (first time)
+                        if self.find_text.is_empty() {
+                            response.request_focus();
+                        }
+                        
+                        // Update matches when search text changes
+                        if response.changed() {
+                            self.search_matches();
+                            self.current_match_index = 0;
+                        }
+
+                        // Handle Enter key for navigation (next match)
+                        if response.has_focus() {
+                            ctx.input(|i| {
+                                if i.key_pressed(egui::Key::Enter) {
+                                    if i.modifiers.shift {
+                                        self.find_previous();
+                                    } else {
+                                        self.find_next();
+                                    }
+                                }
+                            });
+                        }
+
+                        // Up arrow button (previous match)
+                        if ui.button("▲").clicked() {
+                            self.find_previous();
+                        }
+                        
+                        // Down arrow button (next match)
+                        if ui.button("▼").clicked() {
+                            self.find_next();
+                        }
+
+                        // Close button (X)
+                        if ui.button("✕").clicked() {
+                            self.close_find();
+                        }
+                    });
+
+                    // Show match count or "No match" message
+                    if !self.find_text.is_empty() {
+                        if self.find_matches.is_empty() {
+                            // Show "No match" in red
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                ui.colored_label(egui::Color32::RED, "No match");
+                            });
+                        } else {
+                            // Show match count (e.g., "1 of 5")
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                let match_text = if self.find_matches.len() > 0 {
+                                    format!("{} of {}", 
+                                        self.current_match_index + 1, 
+                                        self.find_matches.len())
+                                } else {
+                                    String::new()
+                                };
+                                ui.label(match_text);
+                            });
+                        }
+                    }
+                });
+        }
+
+        /* ---------- Error dialog ---------- */
+
+        if let Some(err) = self.error.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(&error);
+                    ui.label(&err);
                     if ui.button("OK").clicked() {
-                        self.error_message = None;
+                        self.error = None;
                     }
                 });
         }
-
-        // Status bar
-        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(format!("Lines: {}", self.get_line_count()));
-                ui.separator();
-                ui.label(format!("Words: {}", self.get_word_count()));
-                ui.separator();
-                ui.label(format!("Characters: {}", self.get_char_count()));
-            });
-        });
     }
 }
