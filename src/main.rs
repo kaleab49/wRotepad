@@ -8,7 +8,7 @@ fn main() -> Result<(), eframe::Error> {
             .with_title("wRotepad"),
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "wRotepad",
         options,
@@ -73,7 +73,7 @@ impl NotepadApp {
 
     fn save_file_as(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .set_file_name("untitled.txt")
+            .set_file_name("unnamed.txt")
             .save_file()
         {
             match fs::write(&path, &self.text) {
@@ -94,12 +94,13 @@ impl NotepadApp {
     }
 
     fn get_window_title(&self) -> String {
-        let file_name = self.current_file
+        let file_name = self
+            .current_file
             .as_ref()
             .and_then(|path| std::path::Path::new(path).file_name())
             .and_then(|name| name.to_str())
-            .unwrap_or("Untitled");
-        
+            .unwrap_or("Unnamed");
+
         if self.has_unsaved_changes() {
             format!("{}* - wRotepad", file_name)
         } else {
@@ -139,7 +140,10 @@ impl eframe::App for NotepadApp {
         });
 
         // Update window title
-        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Title(self.get_window_title()));
+        ctx.send_viewport_cmd_to(
+            egui::ViewportId::ROOT,
+            egui::ViewportCommand::Title(self.get_window_title()),
+        );
 
         // Keyboard shortcuts
         let input = ctx.input(|i| i.clone());
@@ -179,10 +183,14 @@ impl eframe::App for NotepadApp {
             });
         });
 
-        // Text editor
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.text_edit_multiline(&mut self.text);
-        });
+        // Text editor - fills entire available space
+        egui::CentralPanel::default()
+            .show(ctx, |ui| {
+                let text_edit = egui::TextEdit::multiline(&mut self.text)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(usize::MAX);
+                ui.add_sized(ui.available_size(), text_edit);
+            });
 
         // Show error messages
         if let Some(error) = self.error_message.clone() {
